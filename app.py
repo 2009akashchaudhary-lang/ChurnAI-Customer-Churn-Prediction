@@ -1,4 +1,3 @@
-
 import os
 import joblib
 import shap
@@ -14,6 +13,9 @@ from sklearn.metrics import confusion_matrix
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 DATA_PATH = os.path.join(BASE_DIR, "data", "cleaned_customer_churn.csv")
+ORIGINAL_DATA_PATH = os.path.join(
+    BASE_DIR, "data", "WA_Fn-UseC_-Telco-Customer-Churn.csv"
+)
 MODEL_DIR = os.path.join(BASE_DIR, "models")
 REPORT_DIR = os.path.join(BASE_DIR, "reports")
 
@@ -545,7 +547,8 @@ page = st.sidebar.radio(
         "Model Performance",
         "Customer Analytics",
         "Retention Strategy",
-        "Reports Center"
+        "Reports Center",
+        "Data Cleaning"
     ],
     label_visibility="collapsed"
 )
@@ -1058,9 +1061,6 @@ elif page == "Model Performance":
     st.plotly_chart(fig, width="stretch")
 
     st.divider()
-
-    # CONFUSION MATRIX
-
     st.markdown("### CONFUSION MATRIX")
     st.write(
         "Compare actual customer churn labels with predictions "
@@ -1678,7 +1678,330 @@ elif page == "Reports Center":
     st.write("Customer Intelligence: Enabled")
 
 # ==================================================
-# 14. FOOTER
+# PAGE 7: DATA CLEANING WORKSPACE
+# ==================================================
+
+elif page == "Data Cleaning":
+
+    page_header(
+        "Data Cleaning Workspace",
+        "Inspect data quality, clean CSV files and download a cleaned dataset."
+    )
+
+    st.markdown("### 1. SELECT DATA SOURCE")
+
+    data_source = st.radio(
+        "Choose a dataset source",
+        ["Upload CSV", "Use Original Telco Dataset"],
+        horizontal=True,
+        key="cleaning_data_source"
+    )
+
+    cleaning_source_df = None
+
+    if data_source == "Upload CSV":
+        uploaded_csv = st.file_uploader(
+            "Upload a CSV file",
+            type=["csv"],
+            key="cleaning_file_uploader"
+        )
+
+        if uploaded_csv is not None:
+            try:
+                cleaning_source_df = pd.read_csv(uploaded_csv)
+            except Exception as error:
+                st.error(f"Unable to read this CSV file: {error}")
+
+    else:
+        if os.path.exists(ORIGINAL_DATA_PATH):
+            try:
+                cleaning_source_df = pd.read_csv(ORIGINAL_DATA_PATH)
+                st.success("Original Telco dataset loaded successfully.")
+            except Exception as error:
+                st.error(f"Unable to load original Telco dataset: {error}")
+        else:
+            st.error(
+                "Original dataset not found. Expected file: "
+                "data/WA_Fn-UseC_-Telco-Customer-Churn.csv"
+            )
+
+    if cleaning_source_df is None:
+        st.info("Select or upload a dataset to start the cleaning workflow.")
+
+    elif cleaning_source_df.empty:
+        st.warning("The selected dataset contains no rows.")
+
+    else:
+        original_cleaning_df = cleaning_source_df.copy(deep=True)
+
+        st.divider()
+        st.markdown("### 2. DATASET OVERVIEW")
+
+        overview_columns = st.columns(4)
+        with overview_columns[0]:
+            metric_card("ROWS", f"{len(original_cleaning_df):,}")
+        with overview_columns[1]:
+            metric_card("COLUMNS", f"{len(original_cleaning_df.columns):,}")
+        with overview_columns[2]:
+            metric_card(
+                "MISSING VALUES",
+                f"{int(original_cleaning_df.isna().sum().sum()):,}"
+            )
+        with overview_columns[3]:
+            metric_card(
+                "DUPLICATE ROWS",
+                f"{int(original_cleaning_df.duplicated().sum()):,}"
+            )
+
+        st.divider()
+        st.markdown("### 3. ORIGINAL DATA PREVIEW")
+
+        st.dataframe(
+            original_cleaning_df.head(20),
+            width="stretch",
+            hide_index=True
+        )
+
+        st.divider()
+        st.markdown("### 4. DATA QUALITY REPORT")
+
+        quality_report = pd.DataFrame({
+            "Column": original_cleaning_df.columns,
+            "Data Type": original_cleaning_df.dtypes.astype(str).values,
+            "Missing Values": original_cleaning_df.isna().sum().values,
+            "Missing Percentage": (
+                original_cleaning_df.isna().mean().values * 100
+            ).round(2),
+            "Unique Values": [
+                original_cleaning_df[column].nunique(dropna=True)
+                for column in original_cleaning_df.columns
+            ]
+        })
+
+        st.dataframe(
+            quality_report,
+            width="stretch",
+            hide_index=True
+        )
+
+        st.divider()
+        st.markdown("### 5. CONFIGURE CLEANING OPERATIONS")
+
+        trim_spaces = st.checkbox(
+            "Trim leading and trailing spaces in text columns",
+            value=True,
+            key="clean_trim_spaces"
+        )
+
+        remove_duplicates = st.checkbox(
+            "Remove duplicate rows",
+            value=True,
+            key="clean_remove_duplicates"
+        )
+
+        numeric_candidates = original_cleaning_df.select_dtypes(
+            include=["object", "string"]
+        ).columns.tolist()
+
+        default_numeric_columns = (
+            ["TotalCharges"]
+            if "TotalCharges" in numeric_candidates
+            else []
+        )
+
+        convert_columns = st.multiselect(
+            "Convert selected columns to numeric",
+            options=numeric_candidates,
+            default=default_numeric_columns,
+            key="clean_numeric_columns"
+        )
+
+        missing_handling = st.selectbox(
+            "Missing value handling",
+            [
+                "Keep missing values",
+                "Drop rows with missing values",
+                "Fill numeric columns with median and text columns with mode"
+            ],
+            key="clean_missing_handling"
+        )
+
+        if st.button(
+            "⚡ RUN DATA CLEANING",
+            width="stretch",
+            key="execute_cleaning"
+        ):
+            result_df = original_cleaning_df.copy(deep=True)
+
+            rows_before = len(result_df)
+            missing_before = int(result_df.isna().sum().sum())
+            duplicates_removed = 0
+            rows_removed_missing = 0
+
+            try:
+                # Trim text values without changing the source dataframe.
+                if trim_spaces:
+                    text_columns = result_df.select_dtypes(
+                        include=["object", "string"]
+                    ).columns
+
+                    for column in text_columns:
+                        result_df[column] = (
+                            result_df[column]
+                            .astype("string")
+                            .str.strip()
+                        )
+                        result_df[column] = result_df[column].replace(
+                            "", pd.NA
+                        )
+
+                # Convert chosen columns to numeric values.
+                for column in convert_columns:
+                    result_df[column] = pd.to_numeric(
+                        result_df[column],
+                        errors="coerce"
+                    )
+
+                # Remove duplicate records.
+                if remove_duplicates:
+                    before_duplicates = len(result_df)
+                    result_df = result_df.drop_duplicates()
+                    duplicates_removed = (
+                        before_duplicates - len(result_df)
+                    )
+
+                # Handle missing values using selected strategy.
+                if missing_handling == "Drop rows with missing values":
+                    before_drop = len(result_df)
+                    result_df = result_df.dropna()
+                    rows_removed_missing = before_drop - len(result_df)
+
+                elif missing_handling == (
+                    "Fill numeric columns with median and text columns with mode"
+                ):
+                    for column in result_df.columns:
+                        if not result_df[column].isna().any():
+                            continue
+
+                        if pd.api.types.is_numeric_dtype(result_df[column]):
+                            fill_value = result_df[column].median()
+                        else:
+                            column_modes = result_df[column].mode(
+                                dropna=True
+                            )
+                            fill_value = (
+                                column_modes.iloc[0]
+                                if not column_modes.empty
+                                else None
+                            )
+
+                        if pd.notna(fill_value):
+                            result_df[column] = result_df[column].fillna(
+                                fill_value
+                            )
+
+                result_df = result_df.reset_index(drop=True)
+
+                st.session_state["churnai_cleaning_result"] = result_df
+                st.session_state["churnai_cleaning_result_stats"] = {
+                    "rows_before": rows_before,
+                    "rows_after": len(result_df),
+                    "missing_before": missing_before,
+                    "missing_after": int(result_df.isna().sum().sum()),
+                    "duplicates_removed": duplicates_removed,
+                    "rows_removed_missing": rows_removed_missing
+                }
+
+                st.success("Data cleaning completed successfully!")
+
+            except Exception as error:
+                st.error(f"Data cleaning failed: {error}")
+
+        if "churnai_cleaning_result" in st.session_state:
+            cleaned_result_df = st.session_state[
+                "churnai_cleaning_result"
+            ]
+            cleaning_stats = st.session_state[
+                "churnai_cleaning_result_stats"
+            ]
+
+            st.divider()
+            st.markdown("### 6. CLEANING SUMMARY")
+
+            summary_columns = st.columns(4)
+            with summary_columns[0]:
+                metric_card(
+                    "ROWS BEFORE",
+                    f"{cleaning_stats['rows_before']:,}"
+                )
+            with summary_columns[1]:
+                metric_card(
+                    "ROWS AFTER",
+                    f"{cleaning_stats['rows_after']:,}"
+                )
+            with summary_columns[2]:
+                metric_card(
+                    "DUPLICATES REMOVED",
+                    f"{cleaning_stats['duplicates_removed']:,}"
+                )
+            with summary_columns[3]:
+                metric_card(
+                    "MISSING VALUES LEFT",
+                    f"{cleaning_stats['missing_after']:,}"
+                )
+
+            st.write(
+                "Rows removed because of missing values: "
+                f"**{cleaning_stats['rows_removed_missing']:,}**"
+            )
+
+            st.markdown("### CLEANED DATA PREVIEW")
+            st.dataframe(
+                cleaned_result_df.head(50),
+                width="stretch",
+                hide_index=True
+            )
+
+            st.markdown("### CLEANED DATA QUALITY REPORT")
+
+            cleaned_quality_report = pd.DataFrame({
+                "Column": cleaned_result_df.columns,
+                "Data Type": cleaned_result_df.dtypes.astype(str).values,
+                "Missing Values": cleaned_result_df.isna().sum().values,
+                "Missing Percentage": (
+                    cleaned_result_df.isna().mean().values * 100
+                ).round(2)
+            })
+
+            st.dataframe(
+                cleaned_quality_report,
+                width="stretch",
+                hide_index=True
+            )
+
+            st.divider()
+            st.markdown("### 7. DOWNLOAD CLEANED DATASET")
+
+            cleaned_csv_bytes = cleaned_result_df.to_csv(
+                index=False
+            ).encode("utf-8-sig")
+
+            st.download_button(
+                "⬇ Download Cleaned CSV",
+                data=cleaned_csv_bytes,
+                file_name="churnai_cleaned_dataset.csv",
+                mime="text/csv",
+                key="download_data_cleaning_result"
+            )
+
+            st.caption(
+                "Cleaning is performed on a separate copy. "
+                "The original CSV, cleaned model dataset and trained model "
+                "files are not overwritten."
+            )
+
+# ==================================================
+# FOOTER
 # ==================================================
 
 st.divider()
@@ -1700,3 +2023,4 @@ st.markdown(
     """,
     unsafe_allow_html=True
 )
+
